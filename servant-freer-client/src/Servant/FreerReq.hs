@@ -11,18 +11,22 @@
 module Servant.FreerReq where
 
 import           Control.Exception (toException)
+import           Control.Monad
 import           Control.Monad.Freer
 import           Control.Monad.Freer.Exception
 import           Control.Monad.Freer.Http
 import           Control.Monad.Freer.Reader
 import           Data.ByteString.Lazy hiding (pack, filter, map, null, elem, any)
+import           Data.Proxy
+import           Data.Foldable (toList)
 import           Data.String.Conversions (cs)
 import           Network.HTTP.Client (Response)
 import qualified Network.HTTP.Client as Client
 import           Network.HTTP.Media
 import           Network.HTTP.Types
 import qualified Network.HTTP.Types.Header   as HTTP
-import           Servant.Common.Req hiding (ClientM, runClientM')
+import           Servant.Common.Req hiding (ClientM, runClientM', performRequest)
+import           Servant.API.ContentTypes
 
 newtype ClientM r a = ClientM { runClientM' :: ( Member (Reader ClientEnv) r
                                                , Member (Exc ServantError) r
@@ -48,17 +52,31 @@ performRequest reqMethod req = ClientM $ do
   reqHost <- asks baseUrl
   response <- case (reqToRequest req reqHost) of
     Left some -> throwError . ConnectionError $ toException some
-    Right request -> doRequest request
+    Right request -> doRequest $ request { Client.method = reqMethod }
   let status = Client.responseStatus response
       body = Client.responseBody response
       hdrs = Client.responseHeaders response
       status_code = statusCode status
   ct <- case lookup "Content-Type" $ Client.responseHeaders response of
-    Nothing -> pure $ "application"//"octet-stream"
+    Nothing -> return $ "application"//"octet-stream"
     Just t -> case parseAccept t of
       Nothing -> throwError $ InvalidContentTypeHeader (cs t) body
-      Just t' -> pure t'
+      Just t' -> return t'
   return (status_code, body, ct, hdrs, response)
+
+performRequestCT :: ( Member Http r
+                    , Member (Reader ClientEnv) r
+                    , Member (Exc ServantError) r
+                    , MimeUnrender ct result )
+                 => Proxy ct -> Method -> Req -> ClientM r ([HTTP.Header], result)
+performRequestCT ct reqMethod req = ClientM $ do
+  let acceptCTS = contentTypes ct
+  (_status, respBody, respCT, hdrs, _response) <-
+    runClientM' $ performRequest reqMethod (req { reqAccept = toList acceptCTS })
+  unless (any (matches respCT) acceptCTS) (throwError $ UnsupportedContentType respCT respBody)
+  case mimeUnrender ct respBody of
+    Left err -> throwError $ DecodeFailure err respCT respBody
+    Right val -> return (hdrs, val)
 
 runClientM :: ClientM ('[ Reader ClientEnv
                         , Exc ServantError
