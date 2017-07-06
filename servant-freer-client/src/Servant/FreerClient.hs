@@ -26,7 +26,7 @@ import           Network.HTTP.Media
 import qualified Network.HTTP.Types         as H
 import qualified Network.HTTP.Types.Header  as HTTP
 import           Servant.Client hiding (ClientM, clientWithRoute)
-import           Servant.Common.Req hiding (ClientM, runClientM', performRequest, performRequestCT)
+import           Servant.Common.Req hiding (ClientM, runClientM', performRequest, performRequestCT, performRequestNoBody)
 import           Servant.FreerReq
 
 freeClient :: HasFreeClient r api => Proxy r -> Proxy api -> FreeClient r api
@@ -75,6 +75,48 @@ instance ( MimeUnrender ct a
   clientWithRoute Proxy Proxy req = do
     snd <$> performRequestCT (Proxy :: Proxy ct) method req
       where method = reflectMethod (Proxy :: Proxy method)
+
+instance ( ReflectMethod method
+         , Member Http r
+         , Member (Reader ClientEnv) r
+         , Member (Exc ServantError) r) => HasFreeClient r (Verb method status cts NoContent) where
+  type FreeClient r (Verb method status cts NoContent) =
+    ClientM r NoContent
+  clientWithRoute Proxy Proxy req = do
+    performRequestNoBody method req >> return NoContent
+      where method = reflectMethod (Proxy :: Proxy method)
+
+instance ( MimeUnrender ct a
+         , BuildHeadersTo ls
+         , cts' ~ (ct ': cts)
+         , ReflectMethod method
+         , Member Http r
+         , Member (Reader ClientEnv) r
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r (Verb method status cts' (Headers ls a)) where
+  type FreeClient r (Verb method status cts' (Headers ls a))
+    = ClientM r (Headers ls a)
+  clientWithRoute Proxy Proxy req = do
+    let method = reflectMethod (Proxy :: Proxy method)
+    (hdrs, resp) <- performRequestCT (Proxy :: Proxy ct) method req
+    return $ Headers { getResponse = resp
+                     , getHeadersHList = buildHeadersTo hdrs
+                     }
+
+instance ( BuildHeadersTo ls
+         , ReflectMethod method
+         , Member Http r
+         , Member (Reader ClientEnv) r
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r (Verb method status cts (Headers ls NoContent)) where
+  type FreeClient r (Verb method status cts (Headers ls NoContent))
+    = ClientM r (Headers ls NoContent)
+  clientWithRoute Proxy Proxy req = do
+    let method = reflectMethod (Proxy :: Proxy method)
+    hdrs <- performRequestNoBody method req
+    return $ Headers { getResponse = NoContent
+                     , getHeadersHList = buildHeadersTo hdrs
+                     }
 
 instance ( Member Http r
          , Member (Reader ClientEnv) r
