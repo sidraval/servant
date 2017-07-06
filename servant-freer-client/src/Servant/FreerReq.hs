@@ -78,6 +78,16 @@ performRequestCT ct reqMethod req = ClientM $ do
     Left err -> throwError $ DecodeFailure err respCT respBody
     Right val -> return (hdrs, val)
 
+performRequestNoBody :: ( Member Http r
+                        , Member (Reader ClientEnv) r
+                        , Member (Exc ServantError) r)
+                     => Method
+                     -> Req
+                     -> ClientM r [HTTP.Header]
+performRequestNoBody reqMethod req = do
+  (_, _, _, hdrs, _) <- performRequest reqMethod req
+  return hdrs
+
 runClientM :: ClientM ('[ Reader ClientEnv
                         , Exc ServantError
                         , Http
