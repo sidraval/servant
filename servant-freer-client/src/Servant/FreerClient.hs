@@ -1,33 +1,36 @@
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE InstanceSigs          #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE UndecidableInstances  #-}
 
 module Servant.FreerClient where
 
-import           GHC.TypeLits
-import           Servant.API
 import           Control.Monad.Freer
 import           Control.Monad.Freer.Exception
 import           Control.Monad.Freer.Http
 import           Control.Monad.Freer.Reader
-import           Data.ByteString.Lazy (ByteString)
+import           Data.ByteString.Lazy          (ByteString)
 import           Data.List
 import           Data.Proxy
-import           Data.String.Conversions (cs)
-import           Data.Text (unpack)
-import           Network.HTTP.Client (Response)
+import           Data.String.Conversions       (cs)
+import           Data.Text                     (unpack)
+import           GHC.TypeLits
+import           Network.HTTP.Client           (Response)
 import           Network.HTTP.Media
-import qualified Network.HTTP.Types         as H
-import qualified Network.HTTP.Types.Header  as HTTP
-import           Servant.Client hiding (ClientM, clientWithRoute)
-import           Servant.Common.Req hiding (ClientM, runClientM', performRequest, performRequestCT, performRequestNoBody)
+import qualified Network.HTTP.Types            as H
+import qualified Network.HTTP.Types.Header     as HTTP
+import           Servant.API
+import           Servant.Client                hiding (ClientM, clientWithRoute)
+import           Servant.Common.Req            hiding (ClientM, performRequest,
+                                                performRequestCT,
+                                                performRequestNoBody,
+                                                runClientM')
 import           Servant.FreerReq
 
 freeClient :: HasFreeClient r api => Proxy r -> Proxy api -> FreeClient r api
@@ -45,7 +48,7 @@ instance (HasFreeClient r a, HasFreeClient r b) => HasFreeClient r (a :<|> b) wh
 
 instance HasFreeClient r EmptyAPI where
   type FreeClient r EmptyAPI = EmptyClient
-  clientWithRoute Proxy Proxy _ = EmptyClient
+  clientWithRoute _ _ _ = EmptyClient
 
 instance (KnownSymbol capture, ToHttpApiData a, HasFreeClient r api)
       => HasFreeClient r (Capture capture a :> api) where
@@ -71,19 +74,21 @@ instance ( MimeUnrender ct a
          , cts' ~ (ct ': cts)
          , Member Http r
          , Member (Reader ClientEnv) r
-         , Member (Exc ServantError) r) => HasFreeClient r (Verb method status cts' a) where
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r (Verb method status cts' a) where
   type FreeClient r (Verb method status cts' a) = ClientM r a
-  clientWithRoute Proxy Proxy req = do
+  clientWithRoute _ _ req = do
     snd <$> performRequestCT (Proxy :: Proxy ct) method req
-      where method = reflectMethod (Proxy :: Proxy method)
+    where method = reflectMethod (Proxy :: Proxy method)
 
 instance ( ReflectMethod method
          , Member Http r
          , Member (Reader ClientEnv) r
-         , Member (Exc ServantError) r) => HasFreeClient r (Verb method status cts NoContent) where
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r (Verb method status cts NoContent) where
   type FreeClient r (Verb method status cts NoContent) =
     ClientM r NoContent
-  clientWithRoute Proxy Proxy req = do
+  clientWithRoute _ _ req = do
     performRequestNoBody method req >> return NoContent
       where method = reflectMethod (Proxy :: Proxy method)
 
@@ -97,7 +102,7 @@ instance ( MimeUnrender ct a
          ) => HasFreeClient r (Verb method status cts' (Headers ls a)) where
   type FreeClient r (Verb method status cts' (Headers ls a))
     = ClientM r (Headers ls a)
-  clientWithRoute Proxy Proxy req = do
+  clientWithRoute _ _ req = do
     let method = reflectMethod (Proxy :: Proxy method)
     (hdrs, resp) <- performRequestCT (Proxy :: Proxy ct) method req
     return $ Headers { getResponse = resp
@@ -112,7 +117,7 @@ instance ( BuildHeadersTo ls
          ) => HasFreeClient r (Verb method status cts (Headers ls NoContent)) where
   type FreeClient r (Verb method status cts (Headers ls NoContent))
     = ClientM r (Headers ls NoContent)
-  clientWithRoute Proxy Proxy req = do
+  clientWithRoute _ _ req = do
     let method = reflectMethod (Proxy :: Proxy method)
     hdrs <- performRequestNoBody method req
     return $ Headers { getResponse = NoContent
@@ -130,12 +135,11 @@ instance ( KnownSymbol sym
   type FreeClient r (Header sym a :> api) =
     Maybe a -> FreeClient r api
 
-  clientWithRoute r Proxy req mval =
+  clientWithRoute r _ req mval =
     clientWithRoute r (Proxy :: Proxy api)
                     (maybe req
                            (\value -> Servant.Common.Req.addHeader hname value req)
-                            mval
-                    )
+                            mval)
     where hname = symbolVal (Proxy :: Proxy sym)
 
 instance ( HasFreeClient r api
@@ -144,7 +148,7 @@ instance ( HasFreeClient r api
   type FreeClient r (HttpVersion :> api) =
     FreeClient r api
 
-  clientWithRoute Proxy Proxy = clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+  clientWithRoute r a = clientWithRoute r a
 
 instance ( KnownSymbol sym
          , ToHttpApiData a
@@ -155,12 +159,11 @@ instance ( KnownSymbol sym
     Maybe a -> FreeClient r api
 
   -- if mparam = Nothing, we don't add it to the query string
-  clientWithRoute Proxy Proxy req mparam =
-    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+  clientWithRoute r _ req mparam =
+    clientWithRoute r (Proxy :: Proxy api)
                     (maybe req
                            (flip (appendToQueryString pname) req . Just)
-                           mparamText
-                    )
+                           mparamText)
 
     where pname  = cs pname'
           pname' = symbolVal (Proxy :: Proxy sym)
@@ -174,12 +177,11 @@ instance ( KnownSymbol sym
   type FreeClient r (QueryParams sym a :> api) =
     [a] -> FreeClient r api
 
-  clientWithRoute Proxy Proxy req paramlist =
-    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+  clientWithRoute r _ req paramlist =
+    clientWithRoute r (Proxy :: Proxy api)
                     (foldl' (\ req' -> maybe req' (flip (appendToQueryString pname) req' . Just))
                             req
-                            paramlist'
-                    )
+                            paramlist')
 
     where pname  = cs pname'
           pname' = symbolVal (Proxy :: Proxy sym)
@@ -192,12 +194,11 @@ instance ( KnownSymbol sym
   type FreeClient r (QueryFlag sym :> api) =
     Bool -> FreeClient r api
 
-  clientWithRoute Proxy Proxy req flag =
-    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+  clientWithRoute r _ req flag =
+    clientWithRoute r (Proxy :: Proxy api)
                     (if flag
-                       then appendToQueryString paramname Nothing req
-                       else req
-                    )
+                     then appendToQueryString paramname Nothing req
+                     else req)
 
     where paramname = cs $ symbolVal (Proxy :: Proxy sym)
 
