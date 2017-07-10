@@ -20,6 +20,7 @@ import           Control.Monad.Freer.Reader
 import           Data.ByteString.Lazy (ByteString)
 import           Data.List
 import           Data.Proxy
+import           Data.String.Conversions (cs)
 import           Data.Text (unpack)
 import           Network.HTTP.Client (Response)
 import           Network.HTTP.Media
@@ -118,9 +119,92 @@ instance ( BuildHeadersTo ls
                      , getHeadersHList = buildHeadersTo hdrs
                      }
 
+instance ( KnownSymbol sym
+         , ToHttpApiData a
+         , HasFreeClient r api
+         , Member Http r
+         , Member (Reader ClientEnv) r
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r (Header sym a :> api) where
+
+  type FreeClient r (Header sym a :> api) =
+    Maybe a -> FreeClient r api
+
+  clientWithRoute r Proxy req mval =
+    clientWithRoute r (Proxy :: Proxy api)
+                    (maybe req
+                           (\value -> Servant.Common.Req.addHeader hname value req)
+                            mval
+                    )
+    where hname = symbolVal (Proxy :: Proxy sym)
+
+instance ( HasFreeClient r api
+         ) => HasFreeClient r (HttpVersion :> api) where
+
+  type FreeClient r (HttpVersion :> api) =
+    FreeClient r api
+
+  clientWithRoute Proxy Proxy = clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+
+instance ( KnownSymbol sym
+         , ToHttpApiData a
+         , HasFreeClient r api
+         ) => HasFreeClient r (QueryParam sym a :> api) where
+
+  type FreeClient r (QueryParam sym a :> api) =
+    Maybe a -> FreeClient r api
+
+  -- if mparam = Nothing, we don't add it to the query string
+  clientWithRoute Proxy Proxy req mparam =
+    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+                    (maybe req
+                           (flip (appendToQueryString pname) req . Just)
+                           mparamText
+                    )
+
+    where pname  = cs pname'
+          pname' = symbolVal (Proxy :: Proxy sym)
+          mparamText = fmap toQueryParam mparam
+
+instance ( KnownSymbol sym
+         , ToHttpApiData a
+         , HasFreeClient r api
+         ) => HasFreeClient r (QueryParams sym a :> api) where
+
+  type FreeClient r (QueryParams sym a :> api) =
+    [a] -> FreeClient r api
+
+  clientWithRoute Proxy Proxy req paramlist =
+    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+                    (foldl' (\ req' -> maybe req' (flip (appendToQueryString pname) req' . Just))
+                            req
+                            paramlist'
+                    )
+
+    where pname  = cs pname'
+          pname' = symbolVal (Proxy :: Proxy sym)
+          paramlist' = map (Just . toQueryParam) paramlist
+
+instance ( KnownSymbol sym
+         , HasFreeClient r api
+         ) => HasFreeClient r (QueryFlag sym :> api) where
+
+  type FreeClient r (QueryFlag sym :> api) =
+    Bool -> FreeClient r api
+
+  clientWithRoute Proxy Proxy req flag =
+    clientWithRoute (Proxy :: Proxy r) (Proxy :: Proxy api)
+                    (if flag
+                       then appendToQueryString paramname Nothing req
+                       else req
+                    )
+
+    where paramname = cs $ symbolVal (Proxy :: Proxy sym)
+
 instance ( Member Http r
          , Member (Reader ClientEnv) r
-         , Member (Exc ServantError) r) => HasFreeClient r Raw where
+         , Member (Exc ServantError) r
+         ) => HasFreeClient r Raw where
   type FreeClient r Raw
     = H.Method -> ClientM r ( Int
                             , ByteString
